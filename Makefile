@@ -1,3 +1,5 @@
+all: # make default target by specifying first
+
 top_srcdir := $(abspath $(lastword $(MAKEFILE_LIST))/..)
 
 -include $(top_srcdir)/Makeflags
@@ -20,7 +22,7 @@ MKDIR_P ?= $(MKDIR) -p
 INSTALL ?= install
 INSTALL_DATA ?= $(INSTALL) -m644
 
-$(top_srcdir)/Makeflags:
+$(top_srcdir)/Makeflags.tmp:
 	printf 'prefix := $(value prefix)'"\n" >| $@
 	printf 'includedir := $(value includedir)'"\n" >> $@
 	printf 'libdir := $(value libdir)'"\n" >> $@
@@ -48,6 +50,11 @@ $(top_srcdir)/Makeflags:
 		printf 'all: $$(top_srcdir)/src/5.3/opendkim.so'"\n" >> $@; \
 		printf 'install: $$(lua53cpath)/opendkim.so'"\n" >> $@; \
 	fi
+
+.PHONY: config configure
+
+config configure: $(top_srcdir)/Makeflags.tmp
+	F="$^"; mv "$${F}" "$${F%.tmp}"
 
 include $(top_srcdir)/src/Rules.mk
 

@@ -41,7 +41,7 @@ static int lua_absindex(lua_State *L, int index) {
 	return (index > 0 || index <= LUA_REGISTRYINDEX)? index : lua_gettop(L) + index + 1;
 } /* lua_absindex() */
 
-static void luaL_testudata(lua_State *L, int index, const char *tname) {
+static void *luaL_testudata(lua_State *L, int index, const char *tname) {
 	void *p = lua_touserdata(L, index);
 	int eq; 
 
@@ -166,7 +166,7 @@ static const char *auxL_strerror(lua_State *L, int error) {
 	luaL_Buffer B;
 	char *buf;
 	size_t bufsiz;
-	int top error;
+	int top;
 
 	top = lua_gettop(L);
 
@@ -251,7 +251,8 @@ typedef struct {
 } DKIM_State;
 
 static const DKIM_State DKIM_initializer = {
-	.dkim = NULL,
+	.ctx = NULL,
+	.lib = LUA_NOREF,
 	.key_lookup = LUA_NOREF,
 };
 
@@ -350,13 +351,13 @@ static int DKIM_LIB__gc(lua_State *L) {
 } /* DKIM_LIB__gc() */
 
 static luaL_Reg DKIM_LIB_methods[] = {
-	{ "sign",   lib_sign },
-	{ "verify", lib_verify },
+	{ "sign",   DKIM_LIB_sign },
+	{ "verify", DKIM_LIB_verify },
 	{ NULL,     NULL },
 }; /* DKIM_LIB_methods[] */
 
 static luaL_Reg DKIM_LIB_metamethods[] = {
-	{ "__gc",   lib__gc },
+	{ "__gc",   DKIM_LIB__gc },
 	{ NULL,     NULL },
 }; /* DKIM_LIB_metamethods[] */
 
