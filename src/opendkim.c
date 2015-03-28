@@ -41,6 +41,7 @@ static int lua_absindex(lua_State *L, int index) {
 	return (index > 0 || index <= LUA_REGISTRYINDEX)? index : lua_gettop(L) + index + 1;
 } /* lua_absindex() */
 
+#if 0 /* not needed yet */
 static void *luaL_testudata(lua_State *L, int index, const char *tname) {
 	void *p = lua_touserdata(L, index);
 	int eq;
@@ -54,6 +55,7 @@ static void *luaL_testudata(lua_State *L, int index, const char *tname) {
 
 	return (eq)? p : 0;
 } /* luaL_testudata() */
+#endif
 
 static void luaL_setmetatable(lua_State *L, const char *tname) {
 	luaL_getmetatable(L, tname);
@@ -1554,7 +1556,16 @@ static luaL_Reg opendkim_globals[] = {
 	{ NULL, NULL },
 }; /* opendkim_globals[] */
 
+static struct {
+	const char name[32];
+	lua_Integer value;
+} opendkim_const[] = {
+#include "opendkim-const.h"
+};
+
 int luaopen_opendkim_core(lua_State *L) {
+	size_t i;
+
 	auxL_newmetatable(L, "DKIM_LIB*", DKIM_LIB_methods, DKIM_LIB_metamethods, 0);
 	lua_pop(L, 1);
 
@@ -1565,6 +1576,12 @@ int luaopen_opendkim_core(lua_State *L) {
 	lua_pop(L, 1);
 
 	luaL_newlib(L, opendkim_globals);
+
+	for (i = 0; i < sizeof opendkim_const / sizeof *opendkim_const; i++) {
+		lua_pushstring(L, opendkim_const[i].name);
+		lua_pushinteger(L, opendkim_const[i].value);
+		lua_settable(L, -3);
+	}
 
 	return 1;
 } /* luaopen_opendkim_core() */
