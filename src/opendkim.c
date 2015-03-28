@@ -859,10 +859,32 @@ static int opendkim_ssl_version(lua_State *L) {
 	return 1;
 } /* opendkim_ssl_version() */
 
+static int opendkim_interpose(lua_State *L) {
+	lua_settop(L, 3);
+
+	luaL_checktype(L, 1, LUA_TSTRING);
+	luaL_checktype(L, 2, LUA_TSTRING);
+	luaL_checktype(L, 3, LUA_TFUNCTION);
+
+	luaL_getmetatable(L, luaL_checkstring(L, 1));
+	luaL_argcheck(L, !lua_isnil(L, -1), 1, "no such metatable");
+	lua_getfield(L, -1, "__index");
+
+	lua_pushvalue(L, 2); /* push method name */
+	lua_gettable(L, -2); /* push old method */
+
+	lua_pushvalue(L, 2); /* push method name */
+	lua_pushvalue(L, 3); /* push new method */
+	lua_settable(L, -4); /* replace old method */
+
+	return 1; /* return old method */
+} /* opendkim_interpose() */
+
 static luaL_Reg opendkim_globals[] = {
 	{ "init",        opendkim_init },
 	{ "libversion",  opendkim_libversion },
 	{ "ssl_version", opendkim_ssl_version },
+	{ "interpose",   opendkim_interpose },
 	{ NULL,          NULL },
 }; /* opendkim_globals[] */
 
