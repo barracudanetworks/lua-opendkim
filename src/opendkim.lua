@@ -1,5 +1,7 @@
 local core = require"opendkim.core"
 
+local DKIM_STAT_CBTRYAGAIN = core.DKIM_STAT_CBTRYAGAIN
+
 --
 -- We have to issue callbacks from Lua script because the Lua 5.1 API
 -- doesn't support lua_callk. A callback might need to yield.
@@ -43,5 +45,38 @@ core.interpose("DKIM*", "dopending", function (self)
 	return count
 end) -- :dopending
 
+local sig_process; sig_process = core.interpose("DKIM_SIGINFO*", "sig_process", function (self)
+	local dkim = self:getowner()
+
+	while true do
+		local ok, msg, stat = sig_process(self)
+
+		if ok then
+			break
+		elseif stat ~= DKIM_STAT_CBTRYAGAIN then
+			return ok, msg, stat
+		else
+			dkim:dopending()
+		end
+	end
+
+	return true
+end) -- :sig_process
+
+local sig_process; sig_process = core.interpose("DKIM*", "sig_process", function (self, siginfo)
+	while true do
+		local ok, msg, stat = sig_process(self, siginfo)
+
+		if ok then
+			break
+		elseif stat ~= DKIM_STAT_CBTRYAGAIN then
+			return ok, msg, stat
+		else
+			self:dopending()
+		end
+	end
+
+	return true
+end) -- :sig_process
 
 return core

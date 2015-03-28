@@ -43,7 +43,7 @@ static int lua_absindex(lua_State *L, int index) {
 
 static void *luaL_testudata(lua_State *L, int index, const char *tname) {
 	void *p = lua_touserdata(L, index);
-	int eq; 
+	int eq;
 
 	if (!p || !lua_getmetatable(L, index))
 		return 0;
@@ -116,6 +116,12 @@ static _Bool auxL_optboolean(lua_State *L, int index, _Bool def) {
 
 	return lua_toboolean(L, index);
 } /* auxL_optboolean() */
+
+static _Bool auxL_checkboolean(lua_State *L, int index) {
+	luaL_checkany(L, index);
+
+	return lua_toboolean(L, index);
+} /* auxL_checkboolean() */
 
 static int auxL_newmetatable(lua_State *L, const char *tname, const luaL_Reg *methods, const luaL_Reg *metamethods, int nup) {
 	int i;
@@ -322,6 +328,9 @@ static const DKIM_State DKIM_initializer = {
 	},
 };
 
+static DKIM_State *DKIM_checkself(lua_State *L, int index);
+static DKIM_State *DKIM_checkref(lua_State *L, auxref_t ref);
+
 typedef struct {
 	DKIM_SIGINFO *ctx;
 	auxref_t dkim;
@@ -375,6 +384,239 @@ static int DKIM_SIGINFO_getbh(lua_State *L) {
 	return 1;
 } /* DKIM_SIGINFO_getbh() */
 
+static int DKIM_SIGINFO_sig_getcanonlen(lua_State *L) {
+	DKIM_SIGINFO_State *siginfo = DKIM_SIGINFO_checkself(L, 1);
+	DKIM_State *dkim = DKIM_checkref(L, siginfo->dkim);
+	ssize_t msglen, canonlen, signlen;
+	DKIM_STAT stat;
+
+	if (DKIM_STAT_OK != (stat = dkim_sig_getcanonlen(dkim->ctx, siginfo->ctx, &msglen, &canonlen, &signlen)))
+		return auxL_pushstat(L, stat, "~$#");
+
+	lua_pushinteger(L, msglen);
+	lua_pushinteger(L, canonlen);
+	lua_pushinteger(L, signlen);
+
+	return 3;
+} /* DKIM_SIGINFO_sig_getcanonlen() */
+
+static int DKIM_SIGINFO_sig_getcanons(lua_State *L) {
+	DKIM_SIGINFO_State *siginfo = DKIM_SIGINFO_checkself(L, 1);
+	dkim_canon_t hdr, body;
+	DKIM_STAT stat;
+
+	if (DKIM_STAT_OK != (stat = dkim_sig_getcanons(siginfo->ctx, &hdr, &body)))
+		return auxL_pushstat(L, stat, "~$#");
+
+	lua_pushinteger(L, hdr);
+	lua_pushinteger(L, body);
+
+	return 2;
+} /* DKIM_SIGINFO_sig_getcanons() */
+
+static int DKIM_SIGINFO_sig_getdnssec(lua_State *L) {
+	DKIM_SIGINFO_State *siginfo = DKIM_SIGINFO_checkself(L, 1);
+
+	lua_pushinteger(L, dkim_sig_getdnssec(siginfo->ctx));
+
+	return 1;
+} /* DKIM_SIGINFO_sig_getdnssec() */
+
+static int DKIM_SIGINFO_sig_getdomain(lua_State *L) {
+	DKIM_SIGINFO_State *siginfo = DKIM_SIGINFO_checkself(L, 1);
+	const void *domain = dkim_sig_getdomain(siginfo->ctx);
+
+	lua_pushstring(L, domain);
+
+	return 1;
+} /* DKIM_SIGINFO_sig_getdomain() */
+
+static int DKIM_SIGINFO_sig_geterror(lua_State *L) {
+	DKIM_SIGINFO_State *siginfo = DKIM_SIGINFO_checkself(L, 1);
+
+	lua_pushinteger(L, dkim_sig_geterror(siginfo->ctx));
+
+	return 1;
+} /* DKIM_SIGINFO_sig_geterror() */
+
+static int DKIM_SIGINFO_sig_getflags(lua_State *L) {
+	DKIM_SIGINFO_State *siginfo = DKIM_SIGINFO_checkself(L, 1);
+
+	lua_pushinteger(L, dkim_sig_getflags(siginfo->ctx));
+
+	return 1;
+} /* DKIM_SIGINFO_sig_getflags() */
+
+static int DKIM_SIGINFO_sig_getidentity_(lua_State *L, DKIM_State *dkim, DKIM_SIGINFO_State *siginfo) {
+	unsigned char buf_[256];
+	void *buf;
+	size_t bufsiz;
+	int top;
+	DKIM_STAT stat;
+
+	top = lua_gettop(L);
+	buf = buf_;
+	bufsiz = sizeof buf;
+
+	goto again;
+
+	do {
+		if (SIZE_MAX / 2 < bufsiz)
+			return auxL_pushstat(L, DKIM_STAT_NORESOURCE, "~$#");
+
+		lua_settop(L, top);
+		bufsiz *= 2;
+		buf = lua_newuserdata(L, bufsiz);
+again:
+		stat = dkim_sig_getidentity(dkim->ctx, siginfo->ctx, buf, bufsiz);
+
+		if (stat != DKIM_STAT_OK && stat != DKIM_STAT_NORESOURCE)
+			return auxL_pushstat(L, stat, "~$#");
+	} while (stat == DKIM_STAT_NORESOURCE);
+
+	lua_pushlstring(L, buf, strnlen(buf, bufsiz));
+
+	return 1;
+} /* DKIM_SIGINFO_sig_getidentity_() */
+
+static int DKIM_SIGINFO_sig_getidentity(lua_State *L) {
+	DKIM_SIGINFO_State *siginfo = DKIM_SIGINFO_checkself(L, 1);
+	DKIM_State *dkim = DKIM_checkref(L, siginfo->dkim);
+
+	return DKIM_SIGINFO_sig_getidentity_(L, dkim, siginfo);
+} /* DKIM_SIGINFO_sig_getidentity() */
+
+static int DKIM_SIGINFO_sig_getkeysize(lua_State *L) {
+	DKIM_SIGINFO_State *siginfo = DKIM_SIGINFO_checkself(L, 1);
+	unsigned int bits;
+	DKIM_STAT stat;
+
+	if (DKIM_STAT_OK != (stat = dkim_sig_getkeysize(siginfo->ctx, &bits)))
+		return auxL_pushstat(L, stat, "~$#");
+
+	lua_pushinteger(L, bits);
+
+	return 1;
+} /* DKIM_SIGINFO_sig_getkeysize() */
+
+static int DKIM_SIGINFO_sig_getreportinfo_(lua_State *L, DKIM_State *dkim, DKIM_SIGINFO_State *siginfo) {
+	(void)L; (void)dkim; (void)siginfo;
+
+	/*
+	 * NB: dkim_sig_getreportinfo doesn't appear to support asynchronous
+	 * DNS. We may need to re-implement this routine in Lua.
+	 */
+
+	return 0;
+} /* DKIM_SIGINFO_sig_getreportinfo_() */
+
+static int DKIM_SIGINFO_sig_getreportinfo(lua_State *L) {
+	DKIM_SIGINFO_State *siginfo = DKIM_SIGINFO_checkself(L, 1);
+	DKIM_State *dkim = DKIM_checkref(L, siginfo->dkim);
+
+	return DKIM_SIGINFO_sig_getidentity_(L, dkim, siginfo);
+} /* DKIM_SIGINFO_sig_getreportinfo() */
+
+static int DKIM_SIGINFO_sig_getselector(lua_State *L) {
+	DKIM_SIGINFO_State *siginfo = DKIM_SIGINFO_checkself(L, 1);
+	const void *selector = dkim_sig_getselector(siginfo->ctx);
+
+	lua_pushstring(L, selector);
+
+	return 1;
+} /* DKIM_SIGINFO_sig_getselector() */
+
+static int DKIM_SIGINFO_sig_getsignalg(lua_State *L) {
+	DKIM_SIGINFO_State *siginfo = DKIM_SIGINFO_checkself(L, 1);
+	dkim_alg_t alg;
+	DKIM_STAT stat;
+
+	if (DKIM_STAT_OK != (stat = dkim_sig_getsignalg(siginfo->ctx, &alg)))
+		return auxL_pushstat(L, stat, "~$#");
+
+	lua_pushinteger(L, alg);
+
+	return 1;
+} /* DKIM_SIGINFO_sig_getsignalg() */
+
+static int DKIM_SIGINFO_sig_getsslbuf(lua_State *L) {
+	DKIM_SIGINFO_State *siginfo = DKIM_SIGINFO_checkself(L, 1);
+
+	lua_pushstring(L, dkim_sig_getsslbuf(siginfo->ctx));
+
+	return 1;
+} /* DKIM_SIGINFO_sig_getsslbuf() */
+
+static int DKIM_SIGINFO_sig_hdrsigned(lua_State *L) {
+	DKIM_SIGINFO_State *siginfo = DKIM_SIGINFO_checkself(L, 1);
+	unsigned char *hdr = (void *)luaL_checkstring(L, 2);
+
+	lua_pushboolean(L, dkim_sig_hdrsigned(siginfo->ctx, hdr));
+
+	return 1;
+} /* DKIM_SIGINFO_sig_hdrsigned() */
+
+static int DKIM_SIGINFO_sig_ignore(lua_State *L) {
+	DKIM_SIGINFO_State *siginfo = DKIM_SIGINFO_checkself(L, 1);
+
+	dkim_sig_ignore(siginfo->ctx);
+
+	lua_pushboolean(L, 1);
+
+	return 1;
+} /* DKIM_SIGINFO_sig_ignore() */
+
+static int DKIM_SIGINFO_sig_process_(lua_State *L, DKIM_State *dkim, DKIM_SIGINFO_State *siginfo) {
+	DKIM_STAT stat;
+
+	if (DKIM_STAT_OK != (stat = dkim_sig_process(dkim->ctx, siginfo->ctx)))
+		return auxL_pushstat(L, stat, "0$#");
+
+	lua_pushboolean(L, 1);
+
+	return 1;
+} /* DKIM_SIGINFO_sig_process_() */
+
+static int DKIM_SIGINFO_sig_process(lua_State *L) {
+	DKIM_SIGINFO_State *siginfo = DKIM_SIGINFO_checkself(L, 1);
+	DKIM_State *dkim = DKIM_checkref(L, siginfo->dkim);
+
+	return DKIM_SIGINFO_sig_process_(L, dkim, siginfo);
+} /* DKIM_SIGINFO_sig_process() */
+
+static int DKIM_SIGINFO_sig_setdnssec(lua_State *L) {
+	DKIM_SIGINFO_State *siginfo = DKIM_SIGINFO_checkself(L, 1);
+	int status = luaL_checkinteger(L, 2);
+
+	dkim_sig_setdnssec(siginfo->ctx, status);
+
+	lua_pushboolean(L, 1);
+
+	return 1;
+} /* DKIM_SIGINFO_sig_setdnssec() */
+
+static int DKIM_SIGINFO_sig_seterror(lua_State *L) {
+	DKIM_SIGINFO_State *siginfo = DKIM_SIGINFO_checkself(L, 1);
+	int error = luaL_checkinteger(L, 2);
+	DKIM_STAT stat;
+
+	if (DKIM_STAT_OK != (stat = dkim_sig_seterror(siginfo->ctx, error)))
+		return auxL_pushstat(L, stat, "0$#");
+
+	lua_pushboolean(L, 1);
+
+	return 1;
+} /* DKIM_SIGINFO_sig_seterror() */
+
+static int DKIM_SIGINFO_getowner(lua_State *L) {
+	DKIM_SIGINFO_State *siginfo = DKIM_SIGINFO_checkself(L, 1);
+
+	auxL_getref(L, siginfo->dkim);
+	DKIM_checkself(L, -1);
+
+	return 1;
+} /* DKIM_SIGINFO_getowner() */
+
 static int DKIM_SIGINFO__gc(lua_State *L) {
 	DKIM_SIGINFO_State *siginfo = luaL_checkudata(L, 1, "DKIM_SIGINFO*");
 
@@ -386,6 +628,29 @@ static int DKIM_SIGINFO__gc(lua_State *L) {
 
 static luaL_Reg DKIM_SIGINFO_methods[] = {
 	{ "getbh", DKIM_SIGINFO_getbh },
+	{ "sig_getcanonlen", DKIM_SIGINFO_sig_getcanonlen },
+	{ "sig_getcanons", DKIM_SIGINFO_sig_getcanons },
+	{ "sig_getdnssec", DKIM_SIGINFO_sig_getdnssec },
+	{ "sig_getdomain", DKIM_SIGINFO_sig_getdomain },
+	{ "sig_geterror", DKIM_SIGINFO_sig_geterror },
+	{ "sig_getflags", DKIM_SIGINFO_sig_getflags },
+	{ "sig_getidentity", DKIM_SIGINFO_sig_getidentity },
+	{ "sig_getkeysize", DKIM_SIGINFO_sig_getkeysize },
+#if 0 /* internal function; cannot be used by application */
+	{ "sig_getqueries", DKIM_SIGINFO_sig_getqueries },
+#endif
+	{ "sig_getreportinfo", DKIM_SIGINFO_sig_getreportinfo },
+	{ "sig_getselector", DKIM_SIGINFO_sig_getselector },
+	{ "sig_getsignalg", DKIM_SIGINFO_sig_getsignalg },
+	{ "sig_getsslbuf", DKIM_SIGINFO_sig_getsslbuf },
+	{ "sig_hdrsigned", DKIM_SIGINFO_sig_hdrsigned },
+	{ "sig_ignore", DKIM_SIGINFO_sig_ignore },
+	{ "sig_process", DKIM_SIGINFO_sig_process },
+	{ "sig_setdnssec", DKIM_SIGINFO_sig_setdnssec },
+	{ "sig_seterror", DKIM_SIGINFO_sig_seterror },
+
+	/* auxiliary module routines */
+	{ "getowner", DKIM_SIGINFO_getowner },
 	{ NULL,    NULL },
 }; /* DKIM_SIGINFO_methods[] */
 
@@ -407,6 +672,16 @@ static DKIM_State *DKIM_checkself(lua_State *L, int index) {
 
 	return dkim;
 } /* DKIM_checkself() */
+
+static DKIM_State *DKIM_checkref(lua_State *L, auxref_t ref) {
+	DKIM_State *dkim;
+
+	auxL_getref(L, ref);
+	dkim = DKIM_checkself(L, -1);
+	lua_pop(L, 1);
+
+	return dkim;
+} /* DKIM_checkref() */
 
 static DKIM_State *DKIM_prep(lua_State *L, int index) {
 	DKIM_State *dkim;
@@ -454,6 +729,265 @@ static int DKIM_getid(lua_State *L) {
 
 	return 1;
 } /* DKIM_getid() */
+
+static int DKIM_add_querymethod(lua_State *L) {
+	DKIM_State *dkim = DKIM_checkself(L, 1);
+	const char *method = luaL_checkstring(L, 2);
+	const char *options = luaL_checkstring(L, 3);
+	DKIM_STAT stat;
+
+	if (DKIM_STAT_OK != (stat = dkim_add_querymethod(dkim->ctx, method, options)))
+		return auxL_pushstat(L, stat, "0$#");
+
+	lua_pushboolean(L, 1);
+
+	return 1;
+} /* DKIM_add_querymethod() */
+
+static int DKIM_add_xtag(lua_State *L) {
+	DKIM_State *dkim = DKIM_checkself(L, 1);
+	const char *tag = luaL_checkstring(L, 2);
+	const char *value = luaL_checkstring(L, 3);
+	DKIM_STAT stat;
+
+	if (DKIM_STAT_OK != (stat = dkim_add_xtag(dkim->ctx, tag, value)))
+		return auxL_pushstat(L, stat, "0$#");
+
+	lua_pushboolean(L, 1);
+
+	return 1;
+} /* DKIM_add_xtag() */
+
+static int DKIM_getpartial(lua_State *L) {
+	DKIM_State *dkim = DKIM_checkself(L, 1);
+
+	lua_pushboolean(L, dkim_getpartial(dkim->ctx));
+
+	return 1;
+} /* DKIM_getpartial() */
+
+static int DKIM_getsighdr(lua_State *L) {
+	DKIM_State *dkim = DKIM_checkself(L, 1);
+	size_t initial = luaL_optinteger(L, 2, strlen(DKIM_SIGNHEADER) + 2);
+	unsigned char *hdr = NULL;
+	size_t len = 0;
+	DKIM_STAT stat;
+
+	if (DKIM_STAT_OK != (stat = dkim_getsighdr_d(dkim->ctx, initial, &hdr, &len)))
+		return auxL_pushstat(L, stat, "~$#");
+
+	lua_pushlstring(L, (char *)hdr, len);
+
+	return 1;
+} /* DKIM_getsighdr() */
+
+static int DKIM_privkey_load(lua_State *L) {
+	DKIM_State *dkim = DKIM_checkself(L, 1);
+	DKIM_STAT stat;
+
+	if (DKIM_STAT_OK != (stat = dkim_privkey_load(dkim->ctx)))
+		return auxL_pushstat(L, stat, "0$#");
+
+	lua_pushboolean(L, 1);
+
+	return 1;
+} /* DKIM_privkey_load() */
+
+static int DKIM_set_margin(lua_State *L) {
+	DKIM_State *dkim = DKIM_checkself(L, 1);
+	int margin = luaL_optinteger(L, 2, DKIM_HDRMARGIN);
+	DKIM_STAT stat;
+
+	if (DKIM_STAT_OK != (stat = dkim_set_margin(dkim->ctx, margin)))
+		return auxL_pushstat(L, stat, "0$#");
+
+	lua_pushboolean(L, 1);
+
+	return 1;
+} /* DKIM_set_margin() */
+
+static int DKIM_set_signer(lua_State *L) {
+	DKIM_State *dkim = DKIM_checkself(L, 1);
+	const void *signer = luaL_checkstring(L, 2);
+	DKIM_STAT stat;
+
+	if (DKIM_STAT_OK != (stat = dkim_set_signer(dkim->ctx, signer)))
+		return auxL_pushstat(L, stat, "0$#");
+
+	lua_pushboolean(L, 1);
+
+	return 1;
+} /* DKIM_set_signer() */
+
+static int DKIM_setpartial(lua_State *L) {
+	DKIM_State *dkim = DKIM_checkself(L, 1);
+	_Bool value = auxL_checkboolean(L, 2);
+	DKIM_STAT stat;
+
+	if (DKIM_STAT_OK != (stat = dkim_setpartial(dkim->ctx, value)))
+		return auxL_pushstat(L, stat, "0$#");
+
+	lua_pushboolean(L, 1);
+
+	return 1;
+} /* DKIM_setpartial() */
+
+static int DKIM_signhdrs(lua_State *L) {
+	DKIM_State *dkim = DKIM_checkself(L, 1);
+	const char **hdrlist;
+	size_t i, n;
+	DKIM_STAT stat;
+
+	luaL_checktype(L, 2, LUA_TTABLE);
+	n = lua_rawlen(L, 2);
+
+	hdrlist = lua_newuserdata(L, sizeof *hdrlist * (n + 1));
+
+	for (i = 0; i < n; i++) {
+		lua_rawgeti(L, 2, i + 1);
+		hdrlist[i] = luaL_checkstring(L, -1);
+		lua_pop(L, 1);
+	}
+
+	hdrlist[n] = NULL;
+
+	if (DKIM_STAT_OK != (stat = dkim_signhdrs(dkim->ctx, hdrlist)))
+		return auxL_pushstat(L, stat, "0$#");
+
+	lua_pushboolean(L, 1);
+
+	return 1;
+} /* DKIM_signhdrs() */
+
+static int DKIM_getsiglist(lua_State *L) {
+	DKIM_State *dkim = DKIM_checkself(L, 1);
+	DKIM_SIGINFO **siglist = NULL;
+	int sigcount = 0, i;
+	DKIM_STAT stat;
+
+	if (DKIM_STAT_OK != (stat = dkim_getsiglist(dkim->ctx, &siglist, &sigcount)))
+		return auxL_pushstat(L, stat, "~$#");
+
+	lua_createtable(L, sigcount, 0);
+
+	for (i = 0; i < sigcount; i++) {
+		DKIM_SIGINFO_push(L, 1, siglist[i]);
+		lua_rawseti(L, -2, i + 1);
+	}
+
+	return 1;
+} /* DKIM_getsiglist() */
+
+static int DKIM_getsignature(lua_State *L) {
+	DKIM_State *dkim = DKIM_checkself(L, 1);
+	DKIM_SIGINFO *siginfo;
+
+	if (!(siginfo = dkim_getsignature(dkim->ctx)))
+		return 0;
+
+	DKIM_SIGINFO_push(L, 1, siginfo);
+
+	return 1;
+} /* DKIM_getsignature() */
+
+static int DKIM_getsslbuf(lua_State *L) {
+	DKIM_State *dkim = DKIM_checkself(L, 1);
+
+	lua_pushstring(L, dkim_getsslbuf(dkim->ctx));
+
+	return 1;
+} /* DKIM_getsslbuf() */
+
+static int DKIM_getuser(lua_State *L) {
+	DKIM_State *dkim = DKIM_checkself(L, 1);
+
+	lua_pushstring(L, (const char *)dkim_getuser(dkim->ctx));
+
+	return 1;
+} /* DKIM_getuser() */
+
+static int DKIM_minbody(lua_State *L) {
+	DKIM_State *dkim = DKIM_checkself(L, 1);
+
+	lua_pushinteger(L, dkim_minbody(dkim->ctx));
+
+	return 1;
+} /* DKIM_minbody() */
+
+static int DKIM_ohdrs(lua_State *L) {
+	DKIM_State *dkim = DKIM_checkself(L, 1);
+	DKIM_SIGINFO_State *siginfo = (lua_isnoneornil(L, 2))? NULL : DKIM_SIGINFO_checkself(L, 2);
+	unsigned char **hdrlist;
+	int hdrlimit = (128 / 2), hdrcount, i;
+	DKIM_STAT stat;
+
+	/* loop, doubling the array size until the list fits */
+	do {
+		lua_settop(L, 2);
+
+		if (INT_MAX / 2 < hdrlimit)
+			goto overflow;
+
+		hdrlimit *= 2;
+
+		if (SIZE_MAX / sizeof *hdrlist < (size_t)hdrlimit)
+			goto overflow;
+
+		hdrlist = lua_newuserdata(L, sizeof *hdrlist * hdrlimit);
+
+		hdrcount = hdrlimit;
+		if (DKIM_STAT_OK != (stat = dkim_ohdrs(dkim->ctx, siginfo->ctx, hdrlist, &hdrcount)))
+			return auxL_pushstat(L, stat, "~$#");
+	} while (hdrcount > hdrlimit);
+
+	lua_createtable(L, hdrcount, 0);
+
+	for (i = 0; i < hdrcount; i++) {
+		lua_pushstring(L, (char *)hdrlist[i]);
+		lua_rawseti(L, -2, i + 1);
+	}
+
+	return 1;
+overflow:
+	return auxL_pushstat(L, DKIM_STAT_NORESOURCE, "~$#");
+} /* DKIM_ohdrs() */
+
+static int DKIM_sig_getcanonlen(lua_State *L) {
+	DKIM_State *dkim = DKIM_checkself(L, 1);
+	DKIM_SIGINFO_State *siginfo = DKIM_SIGINFO_checkself(L, 2);
+	ssize_t msglen, canonlen, signlen;
+	DKIM_STAT stat;
+
+	if (DKIM_STAT_OK != (stat = dkim_sig_getcanonlen(dkim->ctx, siginfo->ctx, &msglen, &canonlen, &signlen)))
+		return auxL_pushstat(L, stat, "~$#");
+
+	lua_pushinteger(L, msglen);
+	lua_pushinteger(L, canonlen);
+	lua_pushinteger(L, signlen);
+
+	return 3;
+} /* DKIM_sig_getcanonlen() */
+
+static int DKIM_sig_getidentity(lua_State *L) {
+	DKIM_State *dkim = DKIM_checkself(L, 1);
+	DKIM_SIGINFO_State *siginfo = (lua_isnoneornil(L, 2))? NULL : DKIM_SIGINFO_checkself(L, 2);
+
+	return DKIM_SIGINFO_sig_getidentity_(L, dkim, siginfo);
+} /* DKIM_sig_getidentity() */
+
+static int DKIM_sig_getreportinfo(lua_State *L) {
+	DKIM_State *dkim = DKIM_checkself(L, 1);
+	DKIM_SIGINFO_State *siginfo = DKIM_SIGINFO_checkself(L, 2);
+
+	return DKIM_SIGINFO_sig_getreportinfo_(L, dkim, siginfo);
+} /* DKIM_sig_getreportinfo() */
+
+static int DKIM_sig_process(lua_State *L) {
+	DKIM_State *dkim = DKIM_checkself(L, 1);
+	DKIM_SIGINFO_State *siginfo = DKIM_SIGINFO_checkself(L, 2);
+
+	return DKIM_SIGINFO_sig_process_(L, dkim, siginfo);
+} /* DKIM_sig_process() */
 
 static int DKIM_post_final(lua_State *L) {
 	DKIM_State *dkim = DKIM_checkself(L, 1);
@@ -529,7 +1063,7 @@ static int DKIM_getpending(lua_State *L) {
 	}
 
 	return 0;
-} /* DKIM_getpending() */ 
+} /* DKIM_getpending() */
 
 static int DKIM__gc(lua_State *L) {
 	DKIM_State *dkim = luaL_checkudata(L, 1, "DKIM*");
@@ -547,12 +1081,49 @@ static int DKIM__gc(lua_State *L) {
 } /* DKIM__gc() */
 
 static luaL_Reg DKIM_methods[] = {
-	{ "geterror",   DKIM_geterror },
-	{ "getmode",    DKIM_getmode },
+	{ "geterror", DKIM_geterror },
+	{ "getmode", DKIM_getmode },
 	{ "get_signer", DKIM_get_signer },
-	{ "getid",      DKIM_getid },
+	{ "getid", DKIM_getid },
+
+	/* signing methods */
+	{ "add_querymethod", DKIM_add_querymethod },
+	{ "add_xtag", DKIM_add_xtag },
+	{ "getpartial", DKIM_getpartial },
+	{ "getsighdr", DKIM_getsighdr },
+	{ "privkey_load", DKIM_privkey_load },
+	{ "set_margin", DKIM_set_margin },
+	{ "set_signer", DKIM_set_signer },
+	{ "setpartial", DKIM_setpartial },
+	{ "signhdrs", DKIM_signhdrs },
+
+	/* verification methods */
+#if 0 /* does not support asynchronous DNS */
+	{ "atps_check", DKIM_atps_check },
+#endif
+#if 0 /* not necessary */
+	{ "diffheaders", DKIM_diffheaders },
+#endif
+#if 0 /* experimental; documented but not actually implemented in OpenDKIM */
+	{ "get_reputation", DKIM_dkim_get_reputation },
+#endif
+	{ "getsiglist", DKIM_getsiglist },
+	{ "getsignature", DKIM_getsignature },
+	{ "getsslbuf", DKIM_getsslbuf },
+	{ "getuser", DKIM_getuser },
+	{ "minbody", DKIM_minbody },
+	{ "ohdrs", DKIM_ohdrs },
+	{ "sig_getcanonlen", DKIM_sig_getcanonlen },
+	{ "sig_getidentity", DKIM_sig_getidentity },
+#if 0 /* internal function; cannot be used by application */
+	{ "sig_getqueries", DKIM_sig_getqueries },
+#endif
+	{ "sig_getreportinfo", DKIM_sig_getreportinfo },
+	{ "sig_process", DKIM_sig_process },
+
+	/* module auxiliary routines */
 	{ "getpending", DKIM_getpending },
-	{ NULL,         NULL },
+	{ NULL, NULL },
 }; /* DKIM_methods[] */
 
 static luaL_Reg DKIM_metamethods[] = {
@@ -859,6 +1430,18 @@ static int opendkim_ssl_version(lua_State *L) {
 	return 1;
 } /* opendkim_ssl_version() */
 
+static int opendkim_getresultstr(lua_State *L) {
+	lua_pushstring(L, dkim_getresultstr(luaL_checkinteger(L, 1)));
+
+	return 1;
+} /* opendkim_getresultstr() */
+
+static int opendkim_sig_geterrorstr(lua_State *L) {
+	lua_pushstring(L, dkim_sig_geterrorstr(luaL_checkinteger(L, 1)));
+
+	return 1;
+} /* opendkim_sig_geterrorstr() */
+
 static int opendkim_interpose(lua_State *L) {
 	lua_settop(L, 3);
 
@@ -881,11 +1464,13 @@ static int opendkim_interpose(lua_State *L) {
 } /* opendkim_interpose() */
 
 static luaL_Reg opendkim_globals[] = {
-	{ "init",        opendkim_init },
-	{ "libversion",  opendkim_libversion },
+	{ "init", opendkim_init },
+	{ "libversion", opendkim_libversion },
 	{ "ssl_version", opendkim_ssl_version },
-	{ "interpose",   opendkim_interpose },
-	{ NULL,          NULL },
+	{ "getresultstr", opendkim_getresultstr },
+	{ "sig_geterrorstr", opendkim_sig_geterrorstr },
+	{ "interpose", opendkim_interpose },
+	{ NULL, NULL },
 }; /* opendkim_globals[] */
 
 int luaopen_opendkim_core(lua_State *L) {
