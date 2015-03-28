@@ -79,4 +79,36 @@ local sig_process; sig_process = core.interpose("DKIM*", "sig_process", function
 	return true
 end) -- :sig_process
 
+local eoh; eoh = core.interpose("DKIM*", "eoh", function (self)
+	while true do
+		local ok, msg, stat = eoh(self)
+
+		if ok then
+			break
+		elseif stat ~= DKIM_STAT_CBTRYAGAIN then
+			return ok, msg, stat
+		else
+			self:dopending()
+		end
+	end
+
+	return true
+end) -- :eoh
+
+local eom; eom = core.interpose("DKIM*", "eom", function (self)
+	while true do
+		local ok, msg, stat = eom(self)
+
+		if ok then
+			break
+		elseif stat ~= DKIM_STAT_CBTRYAGAIN then
+			return ok, msg, stat
+		else
+			self:dopending()
+		end
+	end
+
+	return true
+end) -- :eom
+
 return core

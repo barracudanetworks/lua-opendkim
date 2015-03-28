@@ -989,6 +989,80 @@ static int DKIM_sig_process(lua_State *L) {
 	return DKIM_SIGINFO_sig_process_(L, dkim, siginfo);
 } /* DKIM_sig_process() */
 
+static int DKIM_header(lua_State *L) {
+	DKIM_State *dkim = DKIM_checkself(L, 1);
+	void *hdr;
+	size_t len;
+	DKIM_STAT stat;
+
+	hdr = (void *)luaL_checklstring(L, 2, &len);
+
+	if (DKIM_STAT_OK != (stat = dkim_header(dkim->ctx, hdr, len)))
+		return auxL_pushstat(L, stat, "0$#");
+
+	lua_pushboolean(L, 1);
+
+	return 1;
+} /* DKIM_header() */
+
+static int DKIM_eoh(lua_State *L) {
+	DKIM_State *dkim = DKIM_checkself(L, 1);
+	DKIM_STAT stat;
+
+	if (DKIM_STAT_OK != (stat = dkim_eoh(dkim->ctx)))
+		return auxL_pushstat(L, stat, "0$#");
+
+	lua_pushboolean(L, 1);
+
+	return 1;
+} /* DKIM_eoh() */
+
+static int DKIM_body(lua_State *L) {
+	DKIM_State *dkim = DKIM_checkself(L, 1);
+	void *body;
+	size_t len;
+	DKIM_STAT stat;
+
+	body = (void *)luaL_checklstring(L, 2, &len);
+
+	if (DKIM_STAT_OK != (stat = dkim_body(dkim->ctx, body, len)))
+		return auxL_pushstat(L, stat, "0$#");
+
+	lua_pushboolean(L, 1);
+
+	return 1;
+} /* DKIM_body() */
+
+static int DKIM_eom(lua_State *L) {
+	DKIM_State *dkim = DKIM_checkself(L, 1);
+	DKIM_STAT stat;
+	_Bool testkey;
+
+	if (DKIM_STAT_OK != (stat = dkim_eom(dkim->ctx, &testkey)))
+		return auxL_pushstat(L, stat, "0$#");
+
+	lua_pushboolean(L, 1);
+	lua_pushboolean(L, testkey);
+
+	return 2;
+} /* DKIM_eom() */
+
+static int DKIM_chunk(lua_State *L) {
+	DKIM_State *dkim = DKIM_checkself(L, 1);
+	void *chunk;
+	size_t len;
+	DKIM_STAT stat;
+
+	chunk = (void *)luaL_checklstring(L, 2, &len);
+
+	if (DKIM_STAT_OK != (stat = dkim_chunk(dkim->ctx, chunk, len)))
+		return auxL_pushstat(L, stat, "0$#");
+
+	lua_pushboolean(L, 1);
+
+	return 1;
+} /* DKIM_chunk() */
+
 static int DKIM_post_final(lua_State *L) {
 	DKIM_State *dkim = DKIM_checkself(L, 1);
 	DKIM_CBSTAT stat = luaL_checkinteger(L, 2);
@@ -1120,6 +1194,13 @@ static luaL_Reg DKIM_methods[] = {
 #endif
 	{ "sig_getreportinfo", DKIM_sig_getreportinfo },
 	{ "sig_process", DKIM_sig_process },
+
+	/* processing methods */
+	{ "header", DKIM_header },
+	{ "eoh", DKIM_eoh },
+	{ "body", DKIM_body },
+	{ "eom", DKIM_eom },
+	{ "chunk", DKIM_chunk },
 
 	/* module auxiliary routines */
 	{ "getpending", DKIM_getpending },
