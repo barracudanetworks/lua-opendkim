@@ -91,15 +91,16 @@ static void luaL_setfuncs(lua_State *L, const luaL_Reg *l, int nup) {
 
 typedef int auxref_t;
 
-static auxref_t auxL_ref(lua_State *L, int index) {
-	lua_pushvalue(L, index);
-	return luaL_ref(L, LUA_REGISTRYINDEX);
-} /* auxL_ref() */
-
 static void auxL_unref(lua_State *L, auxref_t *ref) {
 	luaL_unref(L, LUA_REGISTRYINDEX, *ref);
 	*ref = LUA_NOREF;
 } /* auxL_unref() */
+
+static void auxL_ref(lua_State *L, int index, auxref_t *ref) {
+	auxL_unref(L, ref);
+	lua_pushvalue(L, index);
+	*ref = luaL_ref(L, LUA_REGISTRYINDEX);
+} /* auxL_ref() */
 
 static void auxL_getref(lua_State *L, auxref_t ref) {
 	if (ref == LUA_NOREF || ref == LUA_REFNIL) {
@@ -280,7 +281,11 @@ static const DKIM_LIB_State DKIM_LIB_initializer = {
 typedef struct {
 	DKIM *ctx;
 	DKIM_LIB_State *lib;
-	auxref_t libref;
+
+	struct {
+		auxref_t lib; /* DKIM_LIB_State anchor */
+		auxref_t txt; /* key_lookup txt string anchor */
+	} ref;
 
 	struct {
 		int exec;
@@ -310,7 +315,7 @@ typedef struct {
 } DKIM_State;
 
 static const DKIM_State DKIM_initializer = {
-	.libref = LUA_NOREF,
+	.ref = { .lib = LUA_NOREF, .txt = LUA_NOREF },
 	.cb = {
 		.key_lookup = { .stat = DKIM_CBSTAT_ERROR },
 		.prescreen = { .stat = DKIM_CBSTAT_ERROR },
@@ -349,7 +354,7 @@ static DKIM_SIGINFO_State *DKIM_SIGINFO_prep(lua_State *L, int index) {
 	*siginfo = DKIM_SIGINFO_initializer;
 	luaL_setmetatable(L, "DKIM_SIGINFO*");
 
-	siginfo->dkim = auxL_ref(L, index);
+	auxL_ref(L, index, &siginfo->dkim);
 
 	return siginfo;
 } /* DKIM_SIGINFO_prep() */
@@ -412,7 +417,7 @@ static DKIM_State *DKIM_prep(lua_State *L, int index) {
 	*dkim = DKIM_initializer;
 	luaL_setmetatable(L, "DKIM*");
 
-	dkim->libref = auxL_ref(L, index);
+	auxL_ref(L, index, &dkim->ref.lib);
 	dkim->lib = lua_touserdata(L, index);
 
 	return dkim;
@@ -451,24 +456,48 @@ static int DKIM_getid(lua_State *L) {
 } /* DKIM_getid() */
 
 static int DKIM_post_final(lua_State *L) {
+	DKIM_State *dkim = DKIM_checkself(L, 1);
+	DKIM_CBSTAT stat = luaL_checkinteger(L, 2);
+
+	dkim->cb.final.stat = stat;
+	dkim->cb.done |= DKIM_CB_FINAL;
+
 	return 0;
 } /* DKIM_post_final() */
 
 static int DKIM_post_key_lookup(lua_State *L) {
+	DKIM_State *dkim = DKIM_checkself(L, 1);
+	DKIM_CBSTAT stat = luaL_checkinteger(L, 2);
+	const char *txt = luaL_optstring(L, 3, NULL);
+
+	lua_settop(L, 3);
+	auxL_ref(L, 3, &dkim->ref.txt); /* anchor txt string */
+
+	dkim->cb.key_lookup.stat = stat;
+	dkim->cb.key_lookup.txt = txt;
+	dkim->cb.done |= DKIM_CB_KEY_LOOKUP;
+
 	return 0;
 } /* DKIM_post_key_lookup() */
 
 static int DKIM_post_prescreen(lua_State *L) {
+	DKIM_State *dkim = DKIM_checkself(L, 1);
+	DKIM_CBSTAT stat = luaL_checkinteger(L, 2);
+
+	dkim->cb.prescreen.stat = stat;
+	dkim->cb.done |= DKIM_CB_PRESCREEN;
+
 	return 0;
 } /* DKIM_post_prescreen() */
 
-static int DKIM_nextcb(lua_State *L) {
+static int DKIM_getpending(lua_State *L) {
 	DKIM_State *dkim = DKIM_checkself(L, 1);
 	int exec = dkim->cb.exec & ~dkim->cb.done;
 	int i;
 
 	if (DKIM_CB_FINAL & exec) {
 		lua_pushcfunction(L, DKIM_post_final);
+		auxL_getref(L, dkim->lib->final);
 		lua_pushvalue(L, 1);
 		lua_createtable(L, dkim->cb.final.sigcount, 0);
 
@@ -477,15 +506,17 @@ static int DKIM_nextcb(lua_State *L) {
 			lua_rawseti(L, -2, i + 1);
 		}
 
-		return 3;
+		return 4;
 	} else if (DKIM_CB_KEY_LOOKUP & exec) {
 		lua_pushcfunction(L, DKIM_post_key_lookup);
+		auxL_getref(L, dkim->lib->key_lookup);
 		lua_pushvalue(L, 1);
 		DKIM_SIGINFO_push(L, 1, dkim->cb.key_lookup.siginfo);
 
-		return 3;
+		return 4;
 	} else if (DKIM_CB_PRESCREEN & exec) {
 		lua_pushcfunction(L, DKIM_post_prescreen);
+		auxL_getref(L, dkim->lib->prescreen);
 		lua_pushvalue(L, 1);
 		lua_createtable(L, dkim->cb.prescreen.sigcount, 0);
 
@@ -494,11 +525,11 @@ static int DKIM_nextcb(lua_State *L) {
 			lua_rawseti(L, -2, i + 1);
 		}
 
-		return 3;
+		return 4;
 	}
 
 	return 0;
-} /* DKIM_nextcb() */ 
+} /* DKIM_getpending() */ 
 
 static int DKIM__gc(lua_State *L) {
 	DKIM_State *dkim = luaL_checkudata(L, 1, "DKIM*");
@@ -508,7 +539,9 @@ static int DKIM__gc(lua_State *L) {
 		dkim->ctx = NULL;
 	}
 
-	auxL_unref(L, &dkim->libref);
+	dkim->lib = NULL;
+	auxL_unref(L, &dkim->ref.lib);
+	auxL_unref(L, &dkim->ref.txt);
 
 	return 0;
 } /* DKIM__gc() */
@@ -518,7 +551,7 @@ static luaL_Reg DKIM_methods[] = {
 	{ "getmode",    DKIM_getmode },
 	{ "get_signer", DKIM_get_signer },
 	{ "getid",      DKIM_getid },
-	{ "nextcb",     DKIM_nextcb },
+	{ "getpending", DKIM_getpending },
 	{ NULL,         NULL },
 }; /* DKIM_methods[] */
 
@@ -624,12 +657,8 @@ static int DKIM_LIB_set_final(lua_State *L) {
 	DKIM_LIB_State *lib = DKIM_LIB_checkself(L, 1);
 
 	luaL_checktype(L, 2, LUA_TFUNCTION);
-
 	auxL_getref(L, lib->final); /* load previous callback */
-	auxL_unref(L, &lib->final); /* unanchor previous callback */
-
-	lib->final = auxL_ref(L, 2); /* anchor new callback */
-
+	auxL_ref(L, 2, &lib->final); /* anchor new callback */
 	dkim_set_final(lib->ctx, &DKIM_on_final);
 
 	return 1; /* return previous callback */
@@ -677,12 +706,8 @@ static int DKIM_LIB_set_key_lookup(lua_State *L) {
 	DKIM_LIB_State *lib = DKIM_LIB_checkself(L, 1);
 
 	luaL_checktype(L, 2, LUA_TFUNCTION);
-
 	auxL_getref(L, lib->key_lookup); /* load previous callback */
-	auxL_unref(L, &lib->key_lookup); /* unanchor previous callback */
-
-	lib->key_lookup = auxL_ref(L, 2); /* anchor new callback */
-
+	auxL_ref(L, 2, &lib->key_lookup); /* anchor new callback */
 	dkim_set_key_lookup(lib->ctx, &DKIM_on_key_lookup);
 
 	return 1; /* return previous callback */
@@ -725,9 +750,7 @@ static int DKIM_LIB_set_prescreen(lua_State *L) {
 	luaL_checktype(L, 2, LUA_TFUNCTION);
 
 	auxL_getref(L, lib->prescreen); /* load previous callback */
-	auxL_unref(L, &lib->prescreen); /* unanchor previous callback */
-
-	lib->prescreen = auxL_ref(L, 2); /* anchor new callback */
+	auxL_ref(L, 2, &lib->prescreen); /* anchor new callback */
 
 	dkim_set_prescreen(lib->ctx, &DKIM_on_prescreen);
 
@@ -843,7 +866,7 @@ static luaL_Reg opendkim_globals[] = {
 	{ NULL,          NULL },
 }; /* opendkim_globals[] */
 
-int luaopen_opendkim(lua_State *L) {
+int luaopen_opendkim_core(lua_State *L) {
 	auxL_newmetatable(L, "DKIM_LIB*", DKIM_LIB_methods, DKIM_LIB_metamethods, 0);
 	lua_pop(L, 1);
 
@@ -856,4 +879,4 @@ int luaopen_opendkim(lua_State *L) {
 	luaL_newlib(L, opendkim_globals);
 
 	return 1;
-} /* luaopen_opendkim() */
+} /* luaopen_opendkim_core() */
