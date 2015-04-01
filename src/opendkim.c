@@ -496,10 +496,10 @@ static int DKIM_SIGINFO_sig_getidentity_(lua_State *L, DKIM_State *dkim, DKIM_SI
 		buf = lua_newuserdata(L, bufsiz);
 again:
 		stat = dkim_sig_getidentity(dkim->ctx, siginfo->ctx, buf, bufsiz);
-
-		if (stat != DKIM_STAT_OK && stat != DKIM_STAT_NORESOURCE)
-			return auxL_pushstat(L, stat, "~$#");
 	} while (stat == DKIM_STAT_NORESOURCE);
+
+	if (stat != DKIM_STAT_OK)
+		return auxL_pushstat(L, stat, "~$#");
 
 	lua_pushlstring(L, buf, strnlen(buf, bufsiz));
 
@@ -644,6 +644,45 @@ static int DKIM_SIGINFO_getowner(lua_State *L) {
 	return 1;
 } /* DKIM_SIGINFO_getowner() */
 
+static int DKIM_SIGINFO_get_sigsubstring_(lua_State *L, DKIM_State *dkim, DKIM_SIGINFO_State *siginfo) {
+	unsigned char buf_[256];
+	void *buf;
+	size_t bufsiz;
+	int top;
+	DKIM_STAT stat;
+
+	top = lua_gettop(L);
+	buf = buf_;
+	bufsiz = sizeof buf;
+
+	goto again;
+
+	do {
+		if (SIZE_MAX / 2 < bufsiz)
+			return auxL_pushstat(L, DKIM_STAT_NORESOURCE, "~$#");
+
+		lua_settop(L, top);
+		bufsiz *= 2;
+		buf = lua_newuserdata(L, bufsiz);
+again:
+		stat = dkim_get_sigsubstring(dkim->ctx, siginfo->ctx, buf, &bufsiz);
+	} while (stat == DKIM_STAT_NORESOURCE);
+
+	if (stat != DKIM_STAT_OK)
+		return auxL_pushstat(L, stat, "~$#");
+
+	lua_pushlstring(L, buf, strnlen(buf, bufsiz));
+
+	return 1;
+} /* DKIM_SIGINFO_get_sigsubstring_() */
+
+static int DKIM_SIGINFO_get_sigsubstring(lua_State *L) {
+	DKIM_SIGINFO_State *siginfo = DKIM_SIGINFO_checkself(L, 1);
+	DKIM_State *dkim = DKIM_checkref(L, siginfo->dkim);
+
+	return DKIM_SIGINFO_get_sigsubstring_(L, dkim, siginfo);
+} /* DKIM_SIGINFO_get_sigsubstring() */
+
 static int DKIM_SIGINFO__gc(lua_State *L) {
 	DKIM_SIGINFO_State *siginfo = luaL_checkudata(L, 1, "DKIM_SIGINFO*");
 
@@ -675,6 +714,7 @@ static luaL_Reg DKIM_SIGINFO_methods[] = {
 	{ "sig_process", DKIM_SIGINFO_sig_process },
 	{ "sig_setdnssec", DKIM_SIGINFO_sig_setdnssec },
 	{ "sig_seterror", DKIM_SIGINFO_sig_seterror },
+	{ "get_sigsubstring", DKIM_SIGINFO_get_sigsubstring },
 
 	/* auxiliary module routines */
 	{ "getowner", DKIM_SIGINFO_getowner },
@@ -748,14 +788,6 @@ static int DKIM_get_signer(lua_State *L) {
 
 	return 1;
 } /* DKIM_get_signer() */
-
-static int DKIM_getid(lua_State *L) {
-	DKIM_State *dkim = DKIM_checkself(L, 1);
-
-	lua_pushstring(L, dkim_getid(dkim->ctx));
-
-	return 1;
-} /* DKIM_getid() */
 
 static int DKIM_add_querymethod(lua_State *L) {
 	DKIM_State *dkim = DKIM_checkself(L, 1);
@@ -1090,6 +1122,58 @@ static int DKIM_chunk(lua_State *L) {
 	return 1;
 } /* DKIM_chunk() */
 
+static int DKIM_getid(lua_State *L) {
+	DKIM_State *dkim = DKIM_checkself(L, 1);
+
+	lua_pushstring(L, dkim_getid(dkim->ctx));
+
+	return 1;
+} /* DKIM_getid() */
+
+#if 0 /* not implemented (documentation out of date) */
+static int DKIM_get_msgdate(lua_State *L) {
+	DKIM_State *dkim = DKIM_checkself(L, 1);
+	uint64_t ts;
+
+	if (0 == (ts = dkim_get_msgdate(dkim->ctx))) {
+		lua_pushboolean(L, 0);
+		lua_pushliteral(L, "Date: header field was not found, or one was found but could not be parsed, or the feature was not enabled when the DKIM library was compiled");
+
+		return 2;
+	}
+
+	lua_pushnumber(L, ts);
+
+	return 1;
+} /* DKIM_get_msgdate() */
+#endif
+
+static int DKIM_get_sigsubstring(lua_State *L) {
+	DKIM_State *dkim = DKIM_checkself(L, 1);
+	DKIM_SIGINFO_State *siginfo = DKIM_SIGINFO_checkself(L, 2);
+
+	return DKIM_SIGINFO_get_sigsubstring_(L, dkim, siginfo);
+} /* DKIM_get_sigsubstring() */
+
+static int DKIM_key_syntax(lua_State *L) {
+	DKIM_State *dkim = DKIM_checkself(L, 1);
+	const char *src;
+	size_t len;
+	unsigned char *buf;
+	DKIM_STAT stat;
+
+	src = luaL_checklstring(L, 2, &len);
+	buf = lua_newuserdata(L, len + 1);
+	memcpy(buf, src, len + 1);
+
+	if (DKIM_STAT_OK != (stat = dkim_key_syntax(dkim->ctx, buf, len)))
+		return auxL_pushstat(L, stat, "0#$");
+
+	lua_pushboolean(L, 1);
+
+	return 1;
+} /* DKIM_key_syntax() */
+
 static int DKIM_post_final(lua_State *L) {
 	DKIM_State *dkim = DKIM_checkself(L, 1);
 	DKIM_CBSTAT stat = luaL_checkinteger(L, 2);
@@ -1182,10 +1266,10 @@ static int DKIM__gc(lua_State *L) {
 } /* DKIM__gc() */
 
 static luaL_Reg DKIM_methods[] = {
+	/* administration methods */
 	{ "geterror", DKIM_geterror },
 	{ "getmode", DKIM_getmode },
 	{ "get_signer", DKIM_get_signer },
-	{ "getid", DKIM_getid },
 
 	/* signing methods */
 	{ "add_querymethod", DKIM_add_querymethod },
@@ -1228,6 +1312,14 @@ static luaL_Reg DKIM_methods[] = {
 	{ "body", DKIM_body },
 	{ "eom", DKIM_eom },
 	{ "chunk", DKIM_chunk },
+
+	/* utility methods */
+	{ "getid", DKIM_getid },
+#if 0 /* not implemented (documentation out of date) */
+	{ "get_msgdate", DKIM_get_msgdate },
+#endif
+	{ "get_sigsubstring", DKIM_get_sigsubstring },
+	{ "key_syntax", DKIM_key_syntax },
 
 	/* module auxiliary routines */
 	{ "getpending", DKIM_getpending },
@@ -1550,6 +1642,44 @@ static int opendkim_sig_geterrorstr(lua_State *L) {
 	return 1;
 } /* opendkim_sig_geterrorstr() */
 
+static int opendkim_mail_parse(lua_State *L) {
+	const char *src;
+	size_t len;
+	unsigned char *buf, *user, *domain;
+
+	src = luaL_checklstring(L, 1, &len);
+	buf = lua_newuserdata(L, len + 1);
+	memcpy(buf, src, len + 1);
+
+	if (0 != dkim_mail_parse(buf, &user, &domain))
+		return auxL_pushstat(L, DKIM_STAT_INTERNAL, "~#$");
+
+	lua_pushstring(L, (char *)user);
+	lua_pushstring(L, (char *)domain);
+
+	return 2;
+} /* opendkim_mail_parse() */
+
+#if 0 /* not declared in dkim.h */
+static int opendkim_mail_parse_multi(lua_State *L) {
+	const char *src;
+	size_t len;
+	unsigned char *buf, *user, *domain;
+
+	src = luaL_checklstring(L, 1, &len);
+	buf = lua_newuserdata(L, len + 1);
+	memcpy(buf, src, len + 1);
+
+	if (0 != dkim_mail_parse_multi(buf, &user, &domain))
+		return auxL_pushstat(L, DKIM_STAT_INTERNAL, "~#$");
+
+	lua_pushstring(L, (char *)user);
+	lua_pushstring(L, (char *)domain);
+
+	return 2;
+} /* opendkim_mail_parse_multi() */
+#endif
+
 static int opendkim_interpose(lua_State *L) {
 	lua_settop(L, 3);
 
@@ -1577,6 +1707,10 @@ static luaL_Reg opendkim_globals[] = {
 	{ "ssl_version", opendkim_ssl_version },
 	{ "getresultstr", opendkim_getresultstr },
 	{ "sig_geterrorstr", opendkim_sig_geterrorstr },
+	{ "mail_parse", opendkim_mail_parse },
+#if 0 /* not declared in dkim.h */
+	{ "mail_parse_multi", opendkim_mail_parse_multi },
+#endif
 	{ "interpose", opendkim_interpose },
 	{ NULL, NULL },
 }; /* opendkim_globals[] */
