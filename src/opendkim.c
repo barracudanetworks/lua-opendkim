@@ -1167,7 +1167,7 @@ static int DKIM_key_syntax(lua_State *L) {
 	memcpy(buf, src, len + 1);
 
 	if (DKIM_STAT_OK != (stat = dkim_key_syntax(dkim->ctx, buf, len)))
-		return auxL_pushstat(L, stat, "0#$");
+		return auxL_pushstat(L, stat, "0$#");
 
 	lua_pushboolean(L, 1);
 
@@ -1567,6 +1567,166 @@ static int DKIM_LIB_verify(lua_State *L) {
 	return 1;
 } /* DKIM_LIB_verify() */
 
+#define AUX_DKIM_OPTIONS(...) do { \
+	if (DKIM_STAT_OK != (stat = dkim_options(lib->ctx, op, opt, __VA_ARGS__))) \
+		goto error; \
+} while (0)
+
+static int DKIM_LIB_options(lua_State *L) {
+	DKIM_LIB_State *lib = DKIM_LIB_checkself(L, 1);
+	int op = luaL_checkinteger(L, 2);
+	int opt = luaL_checkinteger(L, 3);
+	DKIM_STAT stat;
+
+	luaL_argcheck(L, op == DKIM_OP_GETOPT || op == DKIM_OP_SETOPT, 2, "must be either DKIM_OP_GETOPT or DKIM_OP_SETOPT");
+
+	switch (opt) {
+	case DKIM_OPTS_CLOCKDRIFT:
+		/* FALL THROUGH */
+	case DKIM_OPTS_FIXEDTIME:
+		/* FALL THROUGH */
+	case DKIM_OPTS_SIGNATURETTL: {
+		uint64_t seconds;
+
+		if (op == DKIM_OP_GETOPT) {
+			AUX_DKIM_OPTIONS(&seconds, sizeof seconds);
+			lua_pushnumber(L, seconds);
+
+			return 1;
+		} else {
+			seconds = luaL_checkinteger(L, 4);
+			AUX_DKIM_OPTIONS(&seconds, sizeof seconds);
+		}
+
+		break;
+	}
+	case DKIM_OPTS_FLAGS:
+		/* FALL THROUGH */
+	case DKIM_OPTS_MINKEYBITS:
+		/* FALL THROUGH */
+	case DKIM_OPTS_TIMEOUT: {
+		unsigned int value;
+
+		if (op == DKIM_OP_GETOPT) {
+			AUX_DKIM_OPTIONS(&value, sizeof value);
+			lua_pushinteger(L, value);
+
+			return 1;
+		} else {
+			value = luaL_checkinteger(L, 4);
+			AUX_DKIM_OPTIONS(&value, sizeof value);
+		}
+
+		break;
+	}
+	case DKIM_OPTS_MUSTBESIGNED:
+		/* FALL THROUGH */
+	case DKIM_OPTS_OVERSIGNHDRS:
+		/* FALL THROUGH */
+	case DKIM_OPTS_REQUIREDHDRS:
+		/* FALL THROUGH */
+	case DKIM_OPTS_SIGNHDRS:
+		/* FALL THROUGH */
+	case DKIM_OPTS_SKIPHDRS: {
+		const char **list;
+		size_t i, n, m;
+
+		if (op == DKIM_OP_GETOPT) {
+			AUX_DKIM_OPTIONS(&list, sizeof list);
+
+			lua_newtable(L);
+
+			for (i = 0; i < INT_MAX - 1 && list[i]; i++) {
+				lua_pushstring(L, list[i]);
+				lua_rawseti(L, -2, i + 1);
+			}
+
+			return 1;
+		} else if (lua_isnil(L, 4)) {
+			AUX_DKIM_OPTIONS(NULL, 0);
+		} else {
+			luaL_checktype(L, 4, LUA_TTABLE);
+			n = lua_rawlen(L, 4);
+			m = n + 1;
+
+			if (m == 0 || m > INT_MAX || SIZE_MAX / sizeof *list < m)
+				return auxL_pusherror(L, EOVERFLOW, "~$#");
+
+			list = lua_newuserdata(L, sizeof *list * m);
+
+			for (i = 0; i < n; i++) {
+				lua_rawgeti(L, 4, i + 1);
+				list[i] = luaL_checkstring(L, -1);
+				lua_pop(L, 1);
+			}
+
+			list[i] = NULL;
+
+			AUX_DKIM_OPTIONS(list, sizeof list);
+		}
+
+		break;
+	}
+	case DKIM_OPTS_QUERYINFO: {
+		if (op == DKIM_OP_GETOPT) {
+			char dst[256];
+
+			AUX_DKIM_OPTIONS(dst, sizeof dst);
+			lua_pushstring(L, dst);
+
+			return 1;
+		} else {
+			size_t len;
+			const char *src = luaL_checklstring(L, 4, &len);
+
+			AUX_DKIM_OPTIONS((void *)src, len);
+		}
+
+		break;
+	}
+	case DKIM_OPTS_QUERYMETHOD: {
+		dkim_query_t value;
+
+		if (op == DKIM_OP_GETOPT) {
+			AUX_DKIM_OPTIONS(&value, sizeof value);
+			lua_pushinteger(L, value);
+
+			return 1;
+		} else {
+			value = luaL_checkinteger(L, 4);
+			AUX_DKIM_OPTIONS(&value, sizeof value);
+		}
+
+		break;
+	}
+	case DKIM_OPTS_TMPDIR: {
+		if (op == DKIM_OP_GETOPT) {
+			char dst[256];
+
+			AUX_DKIM_OPTIONS(dst, sizeof dst);
+			lua_pushstring(L, dst);
+
+			return 1;
+		} else {
+			size_t len;
+			const char *src = luaL_optlstring(L, 4, NULL, &len);
+
+			AUX_DKIM_OPTIONS((void *)src, len);
+		}
+
+		break;
+	}
+	default:
+		return luaL_argerror(L, 3, lua_pushfstring(L, "%d: invalid option", opt));
+	}
+
+	lua_pushboolean(L, 1);
+
+	return 1;
+error:
+	return auxL_pushstat(L, stat, "~$#");
+} /* DKIM_LIB_options() */
+
 static int DKIM_LIB__gc(lua_State *L) {
 	DKIM_LIB_State *lib = luaL_checkudata(L, 1, "DKIM_LIB*");
 
@@ -1591,6 +1751,7 @@ static luaL_Reg DKIM_LIB_methods[] = {
 	{ "set_prescreen",  DKIM_LIB_set_prescreen },
 	{ "sign",           DKIM_LIB_sign },
 	{ "verify",         DKIM_LIB_verify },
+	{ "options",        DKIM_LIB_options },
 	{ NULL,             NULL },
 }; /* DKIM_LIB_methods[] */
 
@@ -1652,7 +1813,7 @@ static int opendkim_mail_parse(lua_State *L) {
 	memcpy(buf, src, len + 1);
 
 	if (0 != dkim_mail_parse(buf, &user, &domain))
-		return auxL_pushstat(L, DKIM_STAT_INTERNAL, "~#$");
+		return auxL_pushstat(L, DKIM_STAT_INTERNAL, "~$#");
 
 	lua_pushstring(L, (char *)user);
 	lua_pushstring(L, (char *)domain);
@@ -1671,7 +1832,7 @@ static int opendkim_mail_parse_multi(lua_State *L) {
 	memcpy(buf, src, len + 1);
 
 	if (0 != dkim_mail_parse_multi(buf, &user, &domain))
-		return auxL_pushstat(L, DKIM_STAT_INTERNAL, "~#$");
+		return auxL_pushstat(L, DKIM_STAT_INTERNAL, "~$#");
 
 	lua_pushstring(L, (char *)user);
 	lua_pushstring(L, (char *)domain);
