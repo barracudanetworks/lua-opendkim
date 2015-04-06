@@ -1350,7 +1350,7 @@ static DKIM_LIB_State *DKIM_LIB_prep(lua_State *L) {
 
 	lib = lua_newuserdata(L, sizeof *lib);
 	*lib = DKIM_LIB_initializer;
-	luaL_setmetatable(L, "DKIM*");
+	luaL_setmetatable(L, "DKIM_LIB*");
 
 	return lib;
 } /* DKIM_LIB_prep() */
