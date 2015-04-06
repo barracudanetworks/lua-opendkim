@@ -1112,7 +1112,7 @@ static int DKIM_chunk(lua_State *L) {
 	size_t len;
 	DKIM_STAT stat;
 
-	chunk = (void *)luaL_checklstring(L, 2, &len);
+	chunk = (void *)luaL_optlstring(L, 2, NULL, &len);
 
 	if (DKIM_STAT_OK != (stat = dkim_chunk(dkim->ctx, chunk, len)))
 		return auxL_pushstat(L, stat, "0$#");
