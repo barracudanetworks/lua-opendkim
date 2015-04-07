@@ -69,70 +69,30 @@ core.interpose("DKIM*", "dopending", function (self)
 	return count
 end) -- :dopending
 
-local sig_process; sig_process = core.interpose("DKIM_SIGINFO*", "sig_process", function (self)
-	local dkim = self:getowner()
+local function iowrap(class, method)
+	local f; f = core.interpose(class, method, function (self, ...)
+		local dkim = class == "DKIM*" and self or self:getowner()
 
-	while true do
-		local ok, msg, stat = sig_process(self)
+		while true do
+			local ok, msg, stat = f(self, ...)
 
-		if ok then
-			break
-		elseif stat ~= DKIM_STAT_CBTRYAGAIN then
-			return ok, msg, stat
-		else
-			dkim:dopending()
+			if ok then
+				break
+			elseif stat ~= DKIM_STAT_CBTRYAGAIN then
+				return ok, msg, stat
+			else
+				dkim:dopending()
+			end
 		end
-	end
 
-	return true
-end) -- :sig_process
+		return true
+	end)
+end -- iowrap
 
-local sig_process; sig_process = core.interpose("DKIM*", "sig_process", function (self, siginfo)
-	while true do
-		local ok, msg, stat = sig_process(self, siginfo)
-
-		if ok then
-			break
-		elseif stat ~= DKIM_STAT_CBTRYAGAIN then
-			return ok, msg, stat
-		else
-			self:dopending()
-		end
-	end
-
-	return true
-end) -- :sig_process
-
-local eoh; eoh = core.interpose("DKIM*", "eoh", function (self)
-	while true do
-		local ok, msg, stat = eoh(self)
-
-		if ok then
-			break
-		elseif stat ~= DKIM_STAT_CBTRYAGAIN then
-			return ok, msg, stat
-		else
-			self:dopending()
-		end
-	end
-
-	return true
-end) -- :eoh
-
-local eom; eom = core.interpose("DKIM*", "eom", function (self)
-	while true do
-		local ok, msg, stat = eom(self)
-
-		if ok then
-			break
-		elseif stat ~= DKIM_STAT_CBTRYAGAIN then
-			return ok, msg, stat
-		else
-			self:dopending()
-		end
-	end
-
-	return true
-end) -- :eom
+iowrap("DKIM_SIGINFO*", "sig_process")
+iowrap("DKIM*", "sig_process")
+iowrap("DKIM*", "eoh")
+iowrap("DKIM*", "eom")
+iowrap("DKIM*", "chunk")
 
 return core
