@@ -2031,6 +2031,37 @@ static int opendkim_interpose(lua_State *L) {
 	return 1; /* return old method */
 } /* opendkim_interpose() */
 
+static int opendkim_band(lua_State *L) {
+	lua_pushinteger(L, luaL_checkinteger(L, 1) & luaL_checkinteger(L, 2));
+
+	return 1;
+} /* opendkim_band() */
+
+static int opendkim_bnot(lua_State *L) {
+	lua_pushinteger(L, ~luaL_checkinteger(L, 1));
+
+	return 1;
+} /* opendkim_bnot() */
+
+static int opendkim_bor(lua_State *L) {
+	lua_pushinteger(L, luaL_checkinteger(L, 1) | luaL_checkinteger(L, 2));
+
+	return 1;
+} /* opendkim_bor() */
+
+static int opendkim_btest(lua_State *L) {
+	lua_Integer t = ~0;
+
+	do {
+		t &= luaL_checkinteger(L, -1);
+		lua_pop(L, 1);
+	} while (lua_gettop(L) > 0);
+
+	lua_pushboolean(L, t != 0);
+
+	return 1;
+} /* opendkim_btest() */
+
 static luaL_Reg opendkim_globals[] = {
 	{ "init", opendkim_init },
 	{ "libversion", opendkim_libversion },
@@ -2042,6 +2073,10 @@ static luaL_Reg opendkim_globals[] = {
 	{ "mail_parse_multi", opendkim_mail_parse_multi },
 #endif
 	{ "interpose", opendkim_interpose },
+	{ "band", opendkim_band },
+	{ "bnot", opendkim_bnot },
+	{ "bor", opendkim_bor },
+	{ "btest", opendkim_btest },
 	{ NULL, NULL },
 }; /* opendkim_globals[] */
 

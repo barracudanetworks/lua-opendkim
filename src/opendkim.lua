@@ -24,8 +24,6 @@
 -- ==========================================================================
 local core = require"opendkim.core"
 
-local DKIM_STAT_CBTRYAGAIN = core.DKIM_STAT_CBTRYAGAIN
-
 --
 -- We have to issue callbacks from Lua script because the Lua 5.1 API
 -- doesn't support lua_callk. A callback might need to yield.
@@ -70,6 +68,8 @@ core.interpose("DKIM*", "dopending", function (self)
 end) -- :dopending
 
 local function iowrap(class, method)
+	local DKIM_STAT_CBTRYAGAIN = core.DKIM_STAT_CBTRYAGAIN
+
 	local f; f = core.interpose(class, method, function (self, ...)
 		local dkim = class == "DKIM*" and self or self:getowner()
 
@@ -89,10 +89,91 @@ local function iowrap(class, method)
 	end)
 end -- iowrap
 
-iowrap("DKIM_SIGINFO*", "sig_process")
+iowrap("DKIM_SIGINFO*", "process")
 iowrap("DKIM*", "sig_process")
 iowrap("DKIM*", "eoh")
 iowrap("DKIM*", "eom")
 iowrap("DKIM*", "chunk")
+
+
+--
+-- lib:setflag, lib:unsetflag, lib:issetflag - Auxiliary routines to
+-- simplify management of option flags.
+--
+local DKIM_OP_GETOPT = core.DKIM_OP_GETOPT
+local DKIM_OP_SETOPT = core.DKIM_OP_SETOPT
+local DKIM_OPTS_FLAGS = core.DKIM_OPTS_FLAGS
+
+local band = core.band
+local bnot = core.bnot
+local bor = core.bor
+local btest = core.btest
+
+local libflags = 0
+
+for k, flag in pairs(core) do
+	if k:match("^DKIM_LIBFLAGS_") then
+		libflags = bor(libflags, flag)
+	end
+end
+
+local function checkflag(flag)
+	local extra
+
+	if type(flag) ~= "number" then
+		return error(string.format("expected integer flag, got %s)", type(flag)), 2)
+	elseif not btest(libflags, flag) or 0 ~= (band(flag, flag - 1)) then
+		return error(string.format("expected flag, got %d (not in set of DKIM_LIBFLAGS)", flag), 2)
+	end
+
+	return flag
+end -- checkflag
+
+core.interpose("DKIM_LIB*", "setflag", function (self, flag)
+	local flags = self:options(DKIM_OP_GETOPT, DKIM_OPTS_FLAGS)
+
+	return self:options(DKIM_OP_SETOPT, DKIM_OPTS_FLAGS, bor(flags, checkflag(flag)))
+end)
+
+core.interpose("DKIM_LIB*", "unsetflag", function (self, flag)
+	local flags = self:options(DKIM_OP_GETOPT, DKIM_OPTS_FLAGS)
+
+	return self:options(DKIM_OP_SETOPT, DKIM_OPTS_FLAGS, band(flags, bnot(checkflag(flag))))
+end)
+
+core.interpose("DKIM_LIB*", "issetflag", function (self, flag)
+	local flags = self:options(DKIM_OP_GETOPT, DKIM_OPTS_FLAGS)
+
+	return btest(flags, checkflag(flag))
+end)
+
+--
+-- core.strconst - Auxiliary routine to convert constant to string.
+--
+local cache = {}
+
+function core.strconst(match, c)
+	local cached = cache[match] and cache[match][c]
+
+	if cached then
+		return cached
+	end
+
+	for k, v in pairs(core) do
+		if v == c then
+			local name = k:match(match)
+
+			if name then
+				if not cache[match] then
+					cache[match] = {}
+				end
+
+				cache[match][c] = name
+
+				return name
+			end
+		end
+	end
+end -- core.strconst
 
 return core
