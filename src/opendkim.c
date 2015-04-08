@@ -339,21 +339,21 @@ typedef struct {
 			DKIM_SIGINFO **siglist;
 			int sigcount;
 
-			DKIM_STAT stat;
+			DKIM_CBSTAT stat;
 		} final;
 
 		struct {
 			DKIM_SIGINFO *siginfo;
 
 			const char *txt;
-			DKIM_STAT stat;
+			DKIM_CBSTAT stat;
 		} key_lookup;
 
 		struct {
 			DKIM_SIGINFO **siglist;
 			int sigcount;
 
-			DKIM_STAT stat;
+			DKIM_CBSTAT stat;
 		} prescreen;
 	} cb;
 } DKIM_State;
@@ -1276,8 +1276,28 @@ static int DKIM_chunk(lua_State *L) {
 
 	chunk = (void *)luaL_optlstring(L, 2, NULL, &len);
 
-	if (DKIM_STAT_OK != (stat = dkim_chunk(dkim->ctx, chunk, len)))
+	if (DKIM_STAT_OK != (stat = dkim_chunk(dkim->ctx, chunk, len))) {
+		if (stat == DKIM_STAT_CBTRYAGAIN) {
+			/*
+			 * NB: dkim_chunk cannot recover if dkim_eoh fails.
+			 * Calling dkim_chunk again after the callback will
+			 * simply result in a perplexing DKIM_STAT_INVALID
+			 * error.
+			 *
+			 * For non-blocking DNS the caller should use
+			 * dkim_header, dkim_eoh, and dkim_body.
+			 *
+			 * TODO: Implement our own restartable dkim_chunk.
+			 */
+			lua_pushboolean(L, 0);
+			lua_pushstring(L, "dkim_chunk not restartable");
+			lua_pushinteger(L, DKIM_STAT_CBINVALID);
+
+			return 3;
+		}
+
 		return auxL_pushstat(L, stat, "0$#");
+	}
 
 	lua_pushboolean(L, 1);
 
@@ -1361,6 +1381,7 @@ static int DKIM_post_key_lookup(lua_State *L) {
 		auxL_ref(L, 2, &dkim->ref.txt); /* anchor txt string */
 	} else {
 		stat = auxL_checkcbstat(L, 2);
+		auxL_unref(L, &dkim->ref.txt);
 	}
 
 	dkim->cb.key_lookup.stat = stat;
