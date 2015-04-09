@@ -63,6 +63,10 @@
 
 #if LUA_VERSION_NUM < 502
 
+#ifndef LUA_OK
+#define LUA_OK 0
+#endif
+
 static int lua_absindex(lua_State *L, int index) {
 	return (index > 0 || index <= LUA_REGISTRYINDEX)? index : lua_gettop(L) + index + 1;
 } /* lua_absindex() */
@@ -117,6 +121,7 @@ static void luaL_setfuncs(lua_State *L, const luaL_Reg *l, int nup) {
  *
  * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * * */
 
+#define AUX_MIN(a, b) (((a) < (b))? (a) : (b))
 #define AUX_MAX(a, b) (((a) > (b))? (a) : (b))
 
 typedef int auxref_t;
@@ -306,9 +311,28 @@ static int auxL_checkcbstat(lua_State *L, int index) {
 
 typedef struct {
 	DKIM_LIB *ctx;
+
 	auxref_t final; /* reference key to Lua callback function */
-	auxref_t key_lookup; /* "" */
+	auxref_t key_lookup; /* "" (for asynchronous DNS) */
 	auxref_t prescreen; /* "" */
+
+	struct { /* synchronous DNS callbacks */
+		lua_State *L; /* callback thread */
+		auxref_t thread; /* reference key to thread */
+		auxref_t start;
+		auxref_t cancel;
+		auxref_t waitreply;
+		auxref_t trustanchor;
+
+		/*
+		 * NB: only one query can be live at any time because we're
+		 * single-threaded, the old-style DNS callbacks are
+		 * synchronous, and libopendkim always calls start,
+		 * waitreply, and cancel in sequence.
+		 */
+		void *buf;
+		size_t bufsiz;
+	} dns;
 } DKIM_LIB_State;
 
 static const DKIM_LIB_State DKIM_LIB_initializer = {
@@ -316,6 +340,14 @@ static const DKIM_LIB_State DKIM_LIB_initializer = {
 	.final = LUA_NOREF,
 	.key_lookup = LUA_NOREF,
 	.prescreen = LUA_NOREF,
+	.dns = {
+		.L = NULL,
+		.thread = LUA_NOREF,
+		.start = LUA_NOREF,
+		.cancel = LUA_NOREF,
+		.waitreply = LUA_NOREF,
+		.trustanchor = LUA_NOREF,
+	},
 };
 
 #define DKIM_CB_FINAL      0x01
@@ -1917,6 +1949,160 @@ error:
 	return auxL_pushstat(L, stat, "~$#");
 } /* DKIM_LIB_options() */
 
+static void DKIM_LIB_dns_ref(lua_State *L, DKIM_LIB_State *lib, int index, auxref_t *ref) {
+	if (!lib->dns.L) {
+		lua_State *T = lua_newthread(L);
+		auxL_ref(L, -1, &lib->dns.thread);
+		lua_pop(L, 1);
+
+		lib->dns.L = T;
+		dkim_dns_set_query_service(lib->ctx, lib);
+	}
+
+	auxL_ref(L, index, ref);
+} /* DKIM_LIB_dns_ref() */
+
+static int DKIM_LIB_on_dns_start(void *_lib, int type, unsigned char *qname, unsigned char *buf, size_t bufsiz, void **qry) {
+	DKIM_LIB_State *lib = _lib;
+	lua_State *L = lib->dns.L;
+	int status;
+
+	lib->dns.buf = buf;
+	lib->dns.bufsiz = bufsiz;
+	*qry = NULL;
+
+	lua_settop(L, 0);
+	auxL_getref(L, lib->dns.start);
+	lua_pushinteger(L, type);
+	lua_pushstring(L, (char *)qname);
+
+	if (LUA_OK != (status = lua_pcall(L, 2, 1, 0)))
+		return DKIM_DNS_ERROR;
+
+	switch (lua_type(L, 1)) {
+	case LUA_TNUMBER:
+		status = lua_tointeger(L, 1);
+		break;
+	case LUA_TBOOLEAN:
+		status = (lua_toboolean(L, 1))? DKIM_DNS_SUCCESS : DKIM_DNS_ERROR;
+		break;
+	default:
+		status = DKIM_DNS_ERROR;
+		break;
+	}
+
+	return status;
+} /* DKIM_LIB_on_dns_start() */
+
+static int DKIM_LIB_dns_set_start(lua_State *L) {
+	DKIM_LIB_State *lib = DKIM_LIB_checkself(L, 1);
+
+	luaL_checktype(L, 2, LUA_TFUNCTION);
+	auxL_getref(L, lib->dns.start); /* load previous callback */
+	DKIM_LIB_dns_ref(L, lib, 2, &lib->dns.start); /* anchor new callback */
+	dkim_dns_set_query_start(lib->ctx, &DKIM_LIB_on_dns_start);
+
+	return 1; /* return previous callback */
+} /* DKIM_LIB_dns_set_start() */
+
+static int DKIM_LIB_on_dns_waitreply(void *_lib, void *qry, struct timeval *timeout, size_t *replylen, int *error, int *dnssec) {
+	DKIM_LIB_State *lib = _lib;
+	lua_State *L = lib->dns.L;
+	int status;
+	const char *p;
+	size_t n;
+
+	(void)qry;
+	*replylen = 0;
+	*error = 0;
+	*dnssec = 0;
+
+	lua_settop(L, 0);
+	auxL_getref(L, lib->dns.waitreply);
+	lua_pushnumber(L, timeout->tv_sec + (timeout->tv_usec / 1000000.0));
+
+	if (LUA_OK != (status = lua_pcall(L, 1, 3, 0)))
+		return DKIM_DNS_ERROR;
+
+	switch (lua_type(L, 1)) {
+	case LUA_TSTRING:
+		status = DKIM_DNS_SUCCESS;
+
+		p = lua_tolstring(L, 1, &n);
+		n = MIN(n, lib->dns.bufsiz);
+		memcpy(lib->dns.buf, p, n);
+		*replylen = n;
+
+		if (lua_isnumber(L, 2))
+			*error = lua_tointeger(L, 2);
+
+		if (lua_isnumber(L, 3))
+			*dnssec = lua_tointeger(L, 3);
+
+		break;
+	case LUA_TNUMBER:
+		status = lua_tointeger(L, 1);
+		break;
+	default:
+		status = DKIM_DNS_ERROR;
+		break;
+	}
+
+	return status;
+} /* DKIM_LIB_on_dns_waitreply() */
+
+static int DKIM_LIB_dns_set_waitreply(lua_State *L) {
+	DKIM_LIB_State *lib = DKIM_LIB_checkself(L, 1);
+
+	luaL_checktype(L, 2, LUA_TFUNCTION);
+	auxL_getref(L, lib->dns.waitreply); /* load previous callback */
+	DKIM_LIB_dns_ref(L, lib, 2, &lib->dns.waitreply); /* anchor new callback */
+	dkim_dns_set_query_waitreply(lib->ctx, &DKIM_LIB_on_dns_waitreply);
+
+	return 1; /* return previous callback */
+} /* DKIM_LIB_dns_set_waitreply() */
+
+static int DKIM_LIB_on_dns_cancel(void *_lib, void *qry) {
+	DKIM_LIB_State *lib = _lib;
+	lua_State *L = lib->dns.L;
+	int status;
+
+	(void)qry;
+	lib->dns.buf = NULL;
+	lib->dns.bufsiz = 0;
+
+	lua_settop(L, 0);
+	auxL_getref(L, lib->dns.cancel);
+
+	if (LUA_OK != (status = lua_pcall(L, 0, 1, 0)))
+		return DKIM_DNS_ERROR;
+
+	switch (lua_type(L, 1)) {
+	case LUA_TNUMBER:
+		status = lua_tointeger(L, 1);
+		break;
+	case LUA_TBOOLEAN:
+		status = (lua_toboolean(L, 1))? DKIM_DNS_SUCCESS : DKIM_DNS_ERROR;
+		break;
+	default:
+		status = DKIM_DNS_ERROR;
+		break;
+	}
+
+	return status;
+} /* DKIM_LIB_on_dns_cancel() */
+
+static int DKIM_LIB_dns_set_cancel(lua_State *L) {
+	DKIM_LIB_State *lib = DKIM_LIB_checkself(L, 1);
+
+	luaL_checktype(L, 2, LUA_TFUNCTION);
+	auxL_getref(L, lib->dns.cancel); /* load previous callback */
+	DKIM_LIB_dns_ref(L, lib, 2, &lib->dns.cancel); /* anchor new callback */
+	dkim_dns_set_query_cancel(lib->ctx, &DKIM_LIB_on_dns_cancel);
+
+	return 1; /* return previous callback */
+} /* DKIM_LIB_dns_set_cancel() */
+
 static int DKIM_LIB__gc(lua_State *L) {
 	DKIM_LIB_State *lib = luaL_checkudata(L, 1, "DKIM_LIB*");
 
@@ -1928,6 +2114,12 @@ static int DKIM_LIB__gc(lua_State *L) {
 	auxL_unref(L, &lib->final);
 	auxL_unref(L, &lib->key_lookup);
 	auxL_unref(L, &lib->prescreen);
+
+	auxL_unref(L, &lib->dns.thread);
+	auxL_unref(L, &lib->dns.start);
+	auxL_unref(L, &lib->dns.cancel);
+	auxL_unref(L, &lib->dns.waitreply);
+	auxL_unref(L, &lib->dns.trustanchor);
 
 	return 0;
 } /* DKIM_LIB__gc() */
@@ -1942,6 +2134,9 @@ static luaL_Reg DKIM_LIB_methods[] = {
 	{ "sign",           DKIM_LIB_sign },
 	{ "verify",         DKIM_LIB_verify },
 	{ "options",        DKIM_LIB_options },
+	{ "dns_set_start",  DKIM_LIB_dns_set_start },
+	{ "dns_set_waitreply", DKIM_LIB_dns_set_waitreply },
+	{ "dns_set_cancel", DKIM_LIB_dns_set_cancel },
 	{ NULL,             NULL },
 }; /* DKIM_LIB_methods[] */
 
