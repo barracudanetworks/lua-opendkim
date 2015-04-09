@@ -51,6 +51,10 @@
 
 #define UCLIBC_PREREQ(M, m, p) (defined __UCLIBC__ && (__UCLIBC_MAJOR__ > M || (__UCLIBC_MAJOR__ == M && __UCLIBC_MINOR__ > m) || (__UCLIBC_MAJOR__ == M && __UCLIBC_MINOR__ == m && __UCLIBC_SUBLEVEL__ >= p)))
 
+#ifndef HAVE_DKIM_SIG_SETDNSSEC
+#define HAVE_DKIM_SIG_SETDNSSEC 0
+#endif
+
 #ifndef STRERROR_R_CHAR_P
 #define STRERROR_R_CHAR_P ((GLIBC_PREREQ(0,0) || UCLIBC_PREREQ(0,0,0)) && (_GNU_SOURCE || !(_POSIX_C_SOURCE >= 200112L || _XOPEN_SOURCE >= 600)))
 #endif
@@ -784,6 +788,7 @@ static int DKIM_SIGINFO_process(lua_State *L) {
 	return DKIM_SIGINFO_process_(L, dkim, siginfo);
 } /* DKIM_SIGINFO_process() */
 
+#if HAVE_DKIM_SIG_SETDNSSEC
 static int DKIM_SIGINFO_setdnssec(lua_State *L) {
 	DKIM_SIGINFO_State *siginfo = DKIM_SIGINFO_checkself(L, 1);
 	int status = luaL_checkinteger(L, 2);
@@ -794,6 +799,7 @@ static int DKIM_SIGINFO_setdnssec(lua_State *L) {
 
 	return 1;
 } /* DKIM_SIGINFO_setdnssec() */
+#endif
 
 static int DKIM_SIGINFO_seterror(lua_State *L) {
 	DKIM_SIGINFO_State *siginfo = DKIM_SIGINFO_checkself(L, 1);
@@ -898,7 +904,9 @@ static luaL_Reg DKIM_SIGINFO_methods[] = {
 	{ "hdrsigned", DKIM_SIGINFO_hdrsigned },
 	{ "ignore", DKIM_SIGINFO_ignore },
 	{ "process", DKIM_SIGINFO_process },
+#if HAVE_DKIM_SIG_SETDNSSEC
 	{ "setdnssec", DKIM_SIGINFO_setdnssec },
+#endif
 	{ "seterror", DKIM_SIGINFO_seterror },
 	{ "get_sigsubstring", DKIM_SIGINFO_get_sigsubstring },
 	{ "gethashes", DKIM_SIGINFO_gethashes },
