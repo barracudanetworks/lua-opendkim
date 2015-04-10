@@ -1,0 +1,135 @@
+#!/bin/sh
+_=[[
+	usage() {
+		cat <<-EOF
+		Usage: ${0##*/} [-i:h] [PATH]
+		  -i ID  opaque, printable string for identifying the message
+		  -h     print this usage message
+		
+		Report bugs to <wahern@barracuda.com>
+		EOF
+	}
+
+	while getopts "h" OPTC; do
+		case "${OPTC}" in
+		i)
+			export VERIFY_ID="${OPTARG}"
+			;;
+		h)
+			usage
+			exit 0
+			;;
+		*)
+			usage >&2
+			exit 1
+			;;
+		esac
+	done
+
+	shift $((${OPTIND} - 1))
+
+	[ $# -gt 0 ] || set -- "/dev/stdin"
+
+	. "${0%/*}/regress.sh"
+	exec runlua -r5.2 "$0" "$@"
+]]
+
+local dkim = require"opendkim"
+local cqueues = require"cqueues"
+local resolver = require"cqueues.dns.resolver"
+local packet = require"cqueues.dns.packet"
+local DNS_S_ANSWER = packet.section.ANSWER
+
+local function stralgo(a)
+	return dkim.strconst("DKIM_SIGN_(%w+)", a) or "UNKNOWN"
+end -- stralgo
+
+local function key_lookup(vfy, sig)
+	local qrys = sig:getqueries()
+	local stub = assert(resolver.stub())
+
+	for _, qry in ipairs(qrys) do
+		local name, type = qry:getname(), qry:gettype()
+		local reply, why = stub:query(name, type)
+
+		if reply then
+			for rr in reply:grep{ section = DNS_S_ANSWER, type = type } do
+				return rr:data()
+			end
+
+			return dkim.DKIM_CBSTAT_NOTFOUND
+		else
+			io.stderr:write(strin)
+		end
+	end
+
+	return dkim.DKIM_CBSTAT_ERROR
+end -- key_lookup
+
+local path = ... or "/dev/stdin"
+local msg = io.open(path, "r")
+
+local lib = assert(dkim.init())
+
+--assert(lib:setflag(dkim.DKIM_LIBFLAGS_FIXCRLF))
+lib:set_key_lookup(key_lookup)
+
+lib:dns_set_start(function ()
+	print"synchronous DNS interface!"
+	os.exit(1)
+end)
+
+local vfy = assert(lib:verify(os.getenv"VERIFY_ID" or "some-id"))
+
+local function headers(fh)
+	return coroutine.wrap(function ()
+		local yield = coroutine.yield
+		local buf = {}
+
+		for ln in fh:lines"*l" do
+			ln = ln:gsub("\r$", "")
+
+			if ln == "" then
+				if #buf > 0 then
+					yield(table.concat(buf, "\r\n"))
+				end
+
+				break
+			elseif ln:match("^[ \t]") then
+				assert(#buf > 0, "invalid header continuation")
+				buf[#buf + 1] = ln
+			else
+				if #buf > 0 then
+					yield(table.concat(buf, "\r\n"))
+				end
+
+				buf = { ln }
+			end
+		end
+	end)
+end -- headers
+
+for hdr in headers(msg) do
+	assert(vfy:header(hdr))
+end
+
+assert(vfy:eoh())
+
+for ln in msg:lines"*l" do
+	ln = ln:gsub("\r$", "")
+
+	assert(vfy:body(ln .. "\r\n"))
+end
+
+local ok, why, stat = vfy:eom()
+
+if ok then
+	local sig = assert(vfy:getsignature())
+	local i = assert(sig:getidentity())
+	local d = assert(sig:getdomain())
+	local n = assert(sig:getkeysize())
+	local a = assert(sig:getsignalg())
+	print(string.format("OK (d:%s i:%s a:%s n:%d)", i, d, stralgo(a), n))
+else
+	print(string.format("FAIL (%s) (%d)", why, stat))
+end
